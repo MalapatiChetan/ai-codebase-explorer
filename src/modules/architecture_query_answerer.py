@@ -7,7 +7,6 @@ from enum import Enum
 from typing import Dict, Optional, List, Tuple, NamedTuple
 from google import genai
 from src.utils.config import settings
-from src.modules.rag_vector_store import RAGVectorStore
 from src.modules.code_indexer import CodeChunk
 
 logger = logging.getLogger(__name__)
@@ -55,7 +54,7 @@ class ArchitectureQueryAnswerer:
         self.rag_enabled = settings.ENABLE_RAG
         self.rag_store = None  # Will be set per question
     
-    def _init_rag_for_repo(self, repo_name: str) -> Optional[RAGVectorStore]:
+    def _init_rag_for_repo(self, repo_name: str) -> Optional['RAGVectorStore']:
         """Initialize RAG for a specific repository.
         
         Args:
@@ -68,6 +67,9 @@ class ArchitectureQueryAnswerer:
             return None
         
         try:
+            # Import RAG on-demand to avoid slow initialization at startup
+            from src.modules.rag_vector_store import RAGVectorStore
+            
             rag_store = RAGVectorStore(repo_name)
             # Try to load existing index
             if rag_store.load_index():

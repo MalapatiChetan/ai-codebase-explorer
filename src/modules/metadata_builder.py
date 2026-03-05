@@ -7,7 +7,6 @@ from src.modules.repo_scanner import RepositoryScanner
 from src.modules.framework_detector import FrameworkDetector
 from src.modules.diagram_generator import ArchitectureDiagramGenerator
 from src.modules.code_indexer import CodeIndexer
-from src.modules.rag_vector_store import RAGVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +274,9 @@ class RepositoryMetadataBuilder:
         try:
             repo_name = metadata["repository"]["name"]
             logger.info(f"Starting code indexing for RAG system: {repo_name}")
+            
+            # Import RAG on-demand to avoid slow initialization at startup
+            from src.modules.rag_vector_store import RAGVectorStore
             
             # Initialize RAG vector store
             rag_store = RAGVectorStore(repo_name)
