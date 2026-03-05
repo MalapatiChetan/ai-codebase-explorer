@@ -8,6 +8,7 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PIP_NO_CACHE_DIR=1
+ENV PORT=8000
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -24,15 +25,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Create data directory for cloned repos
-RUN mkdir -p data/repos
+# Create temporary data directories (will use /tmp or volume mount in cloud)
+# Note: Cloud platforms may provide ephemeral storage or volumes
+RUN mkdir -p /tmp/ai-explainer/repos /tmp/ai-explainer/diagrams /tmp/ai-explainer/rag_indices || true
 
-# Expose port
+# Expose port (respects PORT env var)
 EXPOSE 8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:8000/api/health || exit 1
+    CMD curl -f http://localhost:${PORT}/api/health || exit 1
 
 # Run the application
-CMD ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Use PORT env variable for cloud platform compatibility
+CMD ["sh", "-c", "python -m uvicorn src.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

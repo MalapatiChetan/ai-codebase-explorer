@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: ai-codebase-explainer
+    runtime: python
+    plan: free  # Change to pro/pay-as-you-go for production
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m uvicorn src.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: PYTHONUNBUFFERED
+        value: true
+      - key: PORT
+        value: 8000
+      - key: GOOGLE_MODEL
+        value: gemini-2.5-flash
+      - key: ENABLE_AI_CHAT
+        value: true
+      - key: DEBUG
+        value: false
+      - key: REPO_CLONE_PATH
+        value: /tmp/ai-explainer/repos
+      - key: DIAGRAM_OUTPUT_PATH
+        value: /tmp/ai-explainer/diagrams
+      - key: RAG_INDEX_PATH
+        value: /tmp/ai-explainer/rag_indices
+      # These must be set via Render dashboard (Environment Variables):
+      # - GOOGLE_API_KEY (required)
