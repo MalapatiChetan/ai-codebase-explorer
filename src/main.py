@@ -42,42 +42,49 @@ app.include_router(routes.router)
 @app.on_event("startup")
 async def startup_event():
     """Startup event handler - initialize application."""
-    logger.info(f"Starting {settings.API_TITLE} v{settings.API_VERSION}")
-    
-    # Log configuration
-    model_name = settings.GOOGLE_MODEL or "not configured"
-    logger.info(f"AI Model: {model_name}")
-    logger.info(f"AI Enabled: {settings.is_ai_usable()}")
-    logger.info(f"Repository clone path: {settings.REPO_CLONE_PATH}")
-    logger.info(f"Diagram output path: {settings.DIAGRAM_OUTPUT_PATH}")
-    logger.info(f"RAG enabled: {settings.ENABLE_RAG}")
-    
-    # Ensure required directories exist (cloud-safe)
-    paths_to_create = [
-        settings.REPO_CLONE_PATH,
-        settings.DIAGRAM_OUTPUT_PATH,
-        settings.RAG_INDEX_PATH,
-    ]
-    
-    for path_str in paths_to_create:
-        if not path_str:
-            continue
-        try:
-            path = Path(path_str)
-            path.mkdir(parents=True, exist_ok=True)
-            logger.debug(f"✓ Directory ready: {path}")
-        except PermissionError:
-            logger.warning(f"⚠ Permission denied creating {path_str} - using as-is")
-        except Exception as e:
-            logger.warning(f"⚠ Could not create {path_str}: {e}")
-    
-    # Validate AI configuration if enabled
-    if settings.ENABLE_AI_CHAT:
-        if not settings.is_ai_usable():
-            reason = settings.get_ai_disabled_reason()
-            logger.warning(f"⚠ AI unavailable: {reason}")
-        else:
-            logger.info("✓ AI (Gemini) is ready")
+    try:
+        logger.info(f"Starting {settings.API_TITLE} v{settings.API_VERSION}")
+        
+        # Log configuration
+        model_name = settings.GOOGLE_MODEL or "not configured"
+        logger.info(f"AI Model: {model_name}")
+        logger.info(f"AI Enabled: {settings.is_ai_usable()}")
+        logger.info(f"Repository clone path: {settings.REPO_CLONE_PATH}")
+        logger.info(f"Diagram output path: {settings.DIAGRAM_OUTPUT_PATH}")
+        logger.info(f"RAG enabled: {settings.ENABLE_RAG}")
+        
+        # Ensure required directories exist (cloud-safe)
+        # Use /tmp for cloud platforms, ./data for local development
+        paths_to_create = [
+            settings.REPO_CLONE_PATH,
+            settings.DIAGRAM_OUTPUT_PATH,
+            settings.RAG_INDEX_PATH,
+        ]
+        
+        for path_str in paths_to_create:
+            if not path_str:
+                continue
+            try:
+                path = Path(path_str)
+                path.mkdir(parents=True, exist_ok=True)
+                logger.info(f"✓ Directory ready: {path}")
+            except PermissionError:
+                logger.warning(f"⚠ Permission denied creating {path_str} - using as-is")
+            except Exception as e:
+                logger.warning(f"⚠ Could not create {path_str}: {e}")
+        
+        # Validate AI configuration if enabled
+        if settings.ENABLE_AI_CHAT:
+            if not settings.is_ai_usable():
+                reason = settings.get_ai_disabled_reason()
+                logger.warning(f"⚠ AI unavailable: {reason}")
+            else:
+                logger.info("✓ AI (Gemini) is ready")
+        
+        logger.info("✓ Application startup COMPLETE - Server ready for requests")
+    except Exception as e:
+        logger.error(f"✗ FATAL ERROR during startup: {e}", exc_info=True)
+        raise
 
 
 @app.on_event("shutdown")

@@ -185,15 +185,8 @@ class Settings(BaseSettings):
 # Create settings instance
 settings = Settings()
 
-# Initialize output directories (safe to do even if paths don't exist yet)
-try:
-    Path(settings.REPO_CLONE_PATH).mkdir(parents=True, exist_ok=True)
-    Path(settings.DIAGRAM_OUTPUT_PATH).mkdir(parents=True, exist_ok=True)
-    Path(settings.RAG_INDEX_PATH).mkdir(parents=True, exist_ok=True)
-except Exception as e:
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.warning(f"Could not create output directories: {e}")
+# Note: Directory creation moved to main.py startup event for cloud compatibility
+# Cloud platforms (Render, Vercel) may have ephemeral /tmp that's only available at runtime
 
 # Optional: Call validate_at_startup() from main.py
 # Example in main.py:
