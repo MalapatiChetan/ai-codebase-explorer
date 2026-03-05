@@ -61,8 +61,16 @@ class RepositoryScanner:
         
         try:
             logger.info(f"Cloning repository from {repo_url} to {repo_path}")
-            Repo.clone_from(repo_url, str(repo_path))
-            logger.info(f"Successfully cloned repository to {repo_path}")
+            # Use shallow clone (depth=1) to save 90%+ storage on cloud platforms
+            # This clones only the latest commit without full history
+            # Prevents "Out of memory" errors on Render's 512MB free tier
+            Repo.clone_from(
+                repo_url, 
+                str(repo_path),
+                depth=1,              # Only latest commit (90-95% smaller)
+                single_branch=True    # Only default branch (faster, less memory)
+            )
+            logger.info(f"Successfully cloned repository to {repo_path} (shallow clone - storage optimized)")
             return repo_path
         
         except GitCommandError as e:
