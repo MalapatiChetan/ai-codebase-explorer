@@ -1,0 +1,27 @@
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+gitpython==3.1.40
+pydantic==2.12.5
+pydantic-settings==2.13.1
+google-genai>=0.1.0
+python-dotenv==1.0.0
+requests>=2.32.5
+
+# Diagram Generation
+graphviz==0.20.3
+
+# RAG (Retrieval-Augmented Generation) Support
+numpy>=2.2.0
+sentence-transformers>=2.2.0
+faiss-cpu>=1.7.4
+
+# Database Support (for future features)
+sqlalchemy==2.0.23
+
+# Additional utilities
+pydantic-extra-types==2.4.1
+PyGithub==2.1.1
+
+# Note: asyncpg and alembic require C build tools on Windows
+# They are optional and only needed for PostgreSQL async support
+# For development, SQLite works fine without these packages
