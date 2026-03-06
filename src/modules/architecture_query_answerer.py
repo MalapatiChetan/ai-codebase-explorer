@@ -35,7 +35,7 @@ class ArchitectureQueryAnswerer:
     """Answers questions about repository architecture using AI or rule-based approaches."""
     
     def __init__(self):
-        """Initialize the query answerer."""
+        """Initialize the query answerer with AI capability detection."""
         # Check if AI is usable using the new helper
         self.ai_usable = settings.is_ai_usable()
         
@@ -43,16 +43,19 @@ class ArchitectureQueryAnswerer:
             self.client = genai.Client(api_key=settings.GOOGLE_API_KEY)
             self.google_model = getattr(settings, "GOOGLE_MODEL", "gemini-1.5-flash")
             self.google_temperature = getattr(settings, "GOOGLE_TEMPERATURE", 0.7)
-            logger.info("AI chat enabled. Using Gemini for architecture Q&A.")
+            logger.info(f"✓ AI (Gemini) enabled. Model: {self.google_model}, Temperature: {self.google_temperature}")
         else:
             self.client = None
             # Log the specific reason for AI being unavailable
             reason = settings.get_ai_disabled_reason()
-            logger.info(f"AI chat unavailable: {reason}. Using rule-based Q&A.")
+            logger.warning(f"⚠ AI disabled: {reason}. Using rule-based Q&A only.")
         
         # Initialize RAG for code-based context (available even with rule-based mode)
         self.rag_enabled = settings.ENABLE_RAG
         self.rag_store = None  # Will be set per question
+        
+        if self.rag_enabled:
+            logger.debug("RAG (semantic search) is enabled for enhanced context retrieval")
     
     def _init_rag_for_repo(self, repo_name: str) -> Optional['RAGVectorStore']:
         """Initialize RAG for a specific repository.
@@ -432,17 +435,21 @@ class ArchitectureQueryAnswerer:
             
             # Try to retrieve code context using RAG
             if self.rag_store:
-                logger.info("Attempting RAG retrieval for enhanced context...")
+                logger.info("Attempting RAG retrieval for enhanced code context...")
                 try:
                     code_snippets = self.rag_store.search(question, k=settings.RAG_TOP_K)
                     
                     if code_snippets:
-                        logger.info(f"Retrieved {len(code_snippets)} code chunks with RAG")
+                        logger.info(f"✓ Retrieved {len(code_snippets)} relevant code chunks via RAG")
                         code_context = self._build_code_context(code_snippets)
                         rag_used = True
                         ai_mode = "RAG + Gemini"
+                    else:
+                        logger.debug("RAG search returned no results, using metadata-only context")
                 except Exception as e:
-                    logger.debug(f"RAG search failed: {e}. Continuing with metadata-only context.")
+                    logger.debug(f"RAG search failed ({type(e).__name__}): {e}. Continuing with metadata-only context.")
+            else:
+                logger.debug("RAG not available, using metadata-only context")
             
             # Build metadata context
             context = self._construct_context(metadata)
@@ -450,8 +457,8 @@ class ArchitectureQueryAnswerer:
             # Build the prompt
             prompt = self._build_query_prompt_with_code(context, question, code_context)
             
-            logger.info(f"Querying Gemini ({ai_mode})...")
-            logger.debug(f"Using model: {self.google_model}")
+            logger.info(f"Querying Gemini API ({ai_mode})...")
+            logger.debug(f"Model: {self.google_model}, Temperature: {self.google_temperature}")
             
             # Call Google Gemini API
             response = self.client.models.generate_content(
@@ -468,7 +475,7 @@ Provide practical, actionable information based on the provided context.
             )
             
             answer_text = response.text
-            logger.info("Gemini answer generated successfully")
+            logger.info(f"✓ Answer generated successfully via Gemini ({ai_mode})")
             
             return {
                 "status": "success",
@@ -482,15 +489,29 @@ Provide practical, actionable information based on the provided context.
             }
         
         except Exception as e:
-            # CRITICAL ERROR: Log more context about why AI failed
+            # CRITICAL ERROR: Log detailed diagnostics about why AI failed
+            error_type = type(e).__name__
             error_msg = str(e)
-            logger.error(f"AI query failed with {type(e).__name__}: {error_msg}")
-            logger.error(f"  Attempted model: {self.google_model}")
-            logger.error(f"  API key set: {bool(settings.GOOGLE_API_KEY)}")
-            logger.error(f"  Falling back to rule-based...")
+            logger.error(f"✗ AI query failed with {error_type}: {error_msg}")
+            logger.error(f"  Repository: {metadata.get('repository', {}).get('name', 'unknown')}")
+            logger.error(f"  Model: {self.google_model}")
+            logger.error(f"  API Key configured: {bool(settings.GOOGLE_API_KEY)}")
+            
+            # Provide detailed diagnostics based on error type
+            if "ResourceExhausted" in error_type or "quota" in error_msg.lower():
+                logger.error("  → Likely cause: Gemini API quota exceeded")
+            elif "PermissionDenied" in error_type or "unauthenticated" in error_msg.lower():
+                logger.error("  → Likely cause: Invalid or missing API key")
+            elif "DeadlineExceeded" in error_type or "timeout" in error_msg.lower():
+                logger.error("  → Likely cause: API call timed out")
+            elif "NotFound" in error_type or "not found" in error_msg.lower():
+                logger.error("  → Likely cause: Model not available or wrong model name")
+            
+            logger.error("  → Falling back to rule-based answering...")
+            
             # Fallback to rule-based with error note
             result = self._rule_based_answer(metadata, question, intent_match)
-            result["note"] = f"Gemini API unavailable ({type(e).__name__}). Using fallback rule-based answer."
+            result["note"] = f"Gemini API error ({error_type}). Using fallback rule-based answer. Check logs for details."
             return result
     
     def _rule_based_answer(self, metadata: Dict, question: str,

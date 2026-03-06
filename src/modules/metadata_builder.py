@@ -39,6 +39,18 @@ class RepositoryMetadataBuilder:
             repo_path, repo_name = self.scanner.clone_repository(repo_url)
             logger.info(f"Repository cloned as: {repo_name}")
             
+            # Step 1b: Capture git information for smart caching
+            git_commit = "unknown"
+            git_branch = "unknown"
+            try:
+                from git import Repo as GitRepo
+                git_repo = GitRepo(str(repo_path))
+                git_commit = git_repo.head.commit.hexsha[:8]  # Short hash
+                git_branch = git_repo.active_branch.name
+                logger.info(f"Git info: commit={git_commit}, branch={git_branch}")
+            except Exception as e:
+                logger.debug(f"Could not extract git info: {e}")
+            
             # Step 2: Scan repository structure
             logger.info("Step 2: Scanning repository structure...")
             scan_metadata = self.scanner.scan_repository(repo_path)
@@ -68,6 +80,8 @@ class RepositoryMetadataBuilder:
                     "url": repo_url,
                     "name": repo_name,  # Use the canonical repo_name from URL extraction, not folder path
                     "path": str(repo_path),
+                    "git_commit": git_commit,  # For smart caching (NEW)
+                    "git_branch": git_branch,   # For smart caching (NEW)
                 },
                 "analysis": {
                     "file_count": scan_metadata["file_count"],

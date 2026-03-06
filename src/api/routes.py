@@ -87,10 +87,12 @@ async def analyze_repository(request: AnalysisRequest):
         logger.info("Building repository metadata...")
         metadata_builder = RepositoryMetadataBuilder()
         metadata = metadata_builder.build_metadata(request.repo_url)
+        repo_name = metadata["repository"]["name"]
+        logger.info(f"✓ Metadata built for repository: {repo_name}")
         
         response_data = {
             "status": "success",
-            "repository_name": metadata["repository"]["name"],
+            "repository_name": repo_name,
             "message": "Repository analysis completed",
             "metadata": metadata
         }
@@ -102,12 +104,14 @@ async def analyze_repository(request: AnalysisRequest):
             analysis = ai_analyzer.analyze(metadata)
             response_data["analysis"] = analysis
         
-        # Include diagrams if available and requested
+        # Prepare diagrams for response (keep in metadata for persistence)
         if request.include_diagrams and "diagrams" in metadata:
-            response_data["diagrams"] = metadata.pop("diagrams")
+            response_data["diagrams"] = metadata["diagrams"]
         
-        # Register the analyzed repository
-        registry.register(metadata["repository"]["name"], metadata)
+        # Save repository to registry BEFORE returning (ensures persistence before response)
+        logger.info(f"Saving metadata to registry for {repo_name}...")
+        registry.register(repo_name, metadata)
+        logger.info(f"✓ Repository {repo_name} registered and saved to cache")
         
         logger.info("Analysis request completed successfully")
         return AnalysisResponse(**response_data)
@@ -177,7 +181,8 @@ async def query_repository_architecture(request: QueryRequest):
         QueryResponse with answer and metadata
     """
     try:
-        logger.info(f"Received query for {request.repository_name}: {request.question}")
+        repo_name = request.repository_name
+        logger.info(f"Received query for {repo_name}: {request.question}")
         
         # Validate question
         if not request.question.strip():
@@ -187,26 +192,33 @@ async def query_repository_architecture(request: QueryRequest):
             )
         
         # Check if repository has been analyzed
-        if not registry.exists(request.repository_name):
+        logger.debug(f"Checking if repository {repo_name} exists in registry...")
+        if not registry.exists(repo_name):
+            available_repos = registry.list_repositories()
+            logger.error(f"Repository '{repo_name}' not found in registry. Available: {available_repos}")
             raise HTTPException(
                 status_code=404,
-                detail=f"Repository '{request.repository_name}' has not been analyzed. Please analyze it first using POST /api/analyze"
+                detail=f"Repository '{repo_name}' has not been analyzed. Please analyze it first using POST /api/analyze. Available repositories: {', '.join(available_repos) if available_repos else 'None'}"
             )
         
         # Get repository metadata
-        metadata = registry.get(request.repository_name)
+        logger.debug(f"Retrieving metadata for {repo_name}...")
+        metadata = registry.get(repo_name)
         if not metadata:
+            logger.error(f"Metadata for '{repo_name}' exists in registry but could not be retrieved")
             raise HTTPException(
                 status_code=404,
-                detail=f"Could not retrieve metadata for '{request.repository_name}'"
+                detail=f"Could not retrieve metadata for '{repo_name}'. Repository may be partially analyzed."
             )
+        
+        logger.info(f"✓ Metadata retrieved successfully for {repo_name}")
         
         # Generate answer
         logger.info("Generating architectural answer...")
         answerer = ArchitectureQueryAnswerer()
         result = answerer.answer_question(metadata, request.question)
         
-        logger.info("Query processed successfully")
+        logger.info(f"✓ Query processed successfully (Mode: {result.get('ai_mode', 'Unknown')})")
         return QueryResponse(
             status=result["status"],
             repository=result["repository"],
@@ -228,6 +240,24 @@ async def query_repository_architecture(request: QueryRequest):
         logger.error(f"Unexpected error during query: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
 
+@router.get("/repositories")
+async def list_repositories():
+    """
+    List all registered/cached repositories.
+    
+    Returns:
+        A list of repository names that have been analyzed and are available
+    """
+    try:
+        repos = registry.list_repositories()
+        return {
+            "status": "success",
+            "count": len(repos),
+            "repositories": repos
+        }
+    except Exception as e:
+        logger.error(f"Error listing repositories: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to list repositories: {str(e)}")
 
 @router.get("/health")
 async def health_check():
@@ -250,6 +280,7 @@ async def get_info():
             "POST /api/analyze": "Analyze a GitHub repository",
             "GET /api/diagrams/{repo_name}": "Retrieve architecture diagram for a repository",
             "POST /api/query": "Ask questions about repository architecture",
+            "GET /api/repositories": "List all analyzed/cached repositories",
             "GET /api/health": "Health check",
             "GET /api/info": "Service information",
         }

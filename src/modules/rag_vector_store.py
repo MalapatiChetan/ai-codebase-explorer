@@ -78,7 +78,7 @@ class EmbeddingGenerator:
             return None
     
     def embed_chunks(self, chunks: List[CodeChunk]) -> List[np.ndarray]:
-        """Generate embeddings for multiple code chunks.
+        """Generate embeddings for multiple code chunks using batch processing.
         
         Args:
             chunks: List of CodeChunk objects
@@ -89,15 +89,41 @@ class EmbeddingGenerator:
         if not self.is_available():
             return []
         
+        if not chunks:
+            return []
+        
+        batch_size = getattr(settings, "RAG_BATCH_SIZE", 50)
         embeddings = []
         
-        for i, chunk in enumerate(chunks):
-            if i % 50 == 0:
-                logger.debug(f"Embedding chunk {i}/{len(chunks)}")
+        # Process chunks in batches for better performance
+        total = len(chunks)
+        for batch_start in range(0, total, batch_size):
+            batch_end = min(batch_start + batch_size, total)
+            batch_chunks = chunks[batch_start:batch_end]
             
-            embedding = self.embed_chunk(chunk)
-            if embedding is not None:
-                embeddings.append(embedding)
+            logger.debug(f"Embedding batch {batch_start//batch_size + 1}/{(total + batch_size - 1)//batch_size} ({batch_start}-{batch_end}/{total})")
+            
+            # Prepare batch texts
+            batch_texts = []
+            for chunk in batch_chunks:
+                text = f"File: {chunk.file_path}\n{chunk.code_content}"
+                batch_texts.append(text)
+            
+            # Batch encode all texts at once
+            try:
+                batch_embeddings = self.model.encode(batch_texts)
+                embeddings.extend(batch_embeddings)
+            except Exception as e:
+                logger.warning(f"Failed to embed batch: {e}")
+                # Fallback to one-by-one
+                for chunk in batch_chunks:
+                    embedding = self.embed_chunk(chunk)
+                    if embedding is not None:
+                        embeddings.append(embedding)
+                    else:
+                        embeddings.append(np.zeros(self.embedding_dim))
+        
+        return embeddings
             else:
                 # Use zero vector if embedding fails
                 embeddings.append(np.zeros(self.embedding_dim))

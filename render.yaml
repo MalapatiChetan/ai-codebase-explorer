@@ -19,10 +19,10 @@ services:
       - key: DEBUG
         value: false
       - key: REPO_CLONE_PATH
-        value: /tmp/ai-explainer/repos
+        value: ./data/repos
       - key: DIAGRAM_OUTPUT_PATH
-        value: /tmp/ai-explainer/diagrams
+        value: ./data/diagrams
       - key: RAG_INDEX_PATH
-        value: /tmp/ai-explainer/rag_indices
+        value: ./data/rag_indices
       # These must be set via Render dashboard (Environment Variables):
       # - GOOGLE_API_KEY (required)

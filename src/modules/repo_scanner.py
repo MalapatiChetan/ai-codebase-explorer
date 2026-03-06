@@ -5,7 +5,7 @@ import shutil
 import time
 import stat
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 from git import Repo
 from git.exc import GitCommandError
 import logging
@@ -33,9 +33,42 @@ class RepositoryScanner:
             name = name[:-4]
         return name
     
+    def _get_latest_remote_commit(self, repo_url: str) -> Optional[str]:
+        """
+        Get the latest commit hash from the remote repository without cloning.
+        Uses git ls-remote to check the remote HEAD commit.
+        
+        Args:
+            repo_url: URL of the GitHub repository
+            
+        Returns:
+            Short commit hash (8 chars) or None if unable to fetch
+        """
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['git', 'ls-remote', '--heads', repo_url],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                lines = result.stdout.strip().split('\n')
+                if lines:
+                    # First line is typically the HEAD/main branch
+                    commit_hash = lines[0].split()[0]
+                    return commit_hash[:8]  # Return short hash
+            logger.debug(f"Could not fetch remote commit info for {repo_url}")
+        except Exception as e:
+            logger.debug(f"Error fetching remote commit: {e}")
+        return None
+
     def clone_repository(self, repo_url: str) -> Tuple[Path, str]:
         """
-        Clone a GitHub repository locally with safe directory cleanup.
+        Clone a GitHub repository locally with smart caching based on commit hash.
+        
+        If repository already exists locally and commit hasn't changed, skip cloning.
+        Otherwise, update the repository to the latest commit.
         
         Args:
             repo_url: URL of the GitHub repository
@@ -49,9 +82,43 @@ class RepositoryScanner:
         repo_name = self.extract_repo_name(repo_url)
         repo_path = self.clone_path / repo_name
         
-        # Try to remove existing repository with retry logic
+        # Check if repository already exists
         if repo_path.exists():
             logger.info(f"Existing repository detected at {repo_path}")
+            
+            # Try to get current commit and remote commit for smart caching
+            try:
+                from git import Repo as GitRepo
+                local_repo = GitRepo(str(repo_path))
+                local_commit = local_repo.head.commit.hexsha[:8]
+                logger.info(f"Local repository commit: {local_commit}")
+                
+                # Get latest remote commit
+                remote_commit = self._get_latest_remote_commit(repo_url)
+                
+                if remote_commit:
+                    logger.info(f"Remote repository commit: {remote_commit}")
+                    
+                    if local_commit == remote_commit:
+                        logger.info(f"✓ Repository is up-to-date (no new commits). Skipping clone.")
+                        return repo_path, repo_name
+                    else:
+                        logger.info(f"Repository has updates. Pulling latest changes...")
+                        try:
+                            # Try to fetch and pull updates
+                            local_repo.remotes.origin.fetch(depth=1)
+                            local_repo.remotes.origin.pull(depth=1)
+                            logger.info(f"✓ Repository updated successfully")
+                            return repo_path, repo_name
+                        except Exception as pull_error:
+                            logger.warning(f"Could not update repository via pull: {pull_error}. Will re-clone.")
+                else:
+                    logger.info("Could not determine remote commit. Proceeding with re-clone.")
+            except Exception as e:
+                logger.warning(f"Could not check git status: {e}. Proceeding with re-clone.")
+            
+            # If we get here, we need to re-clone
+            logger.info(f"Re-cloning repository...")
             success = self._safe_remove_directory(repo_path)
             if not success:
                 logger.error(f"Failed to remove existing repo at {repo_path} - using aggressive cleanup")
@@ -87,7 +154,7 @@ class RepositoryScanner:
                 depth=1,              # Only latest commit (90-95% smaller)
                 single_branch=True    # Only default branch (faster, less memory)
             )
-            logger.info(f"Successfully cloned repository to {repo_path} (shallow clone - storage optimized)")
+            logger.info(f"✓ Successfully cloned repository to {repo_path} (shallow clone - storage optimized)")
             return repo_path, repo_name
         
         except GitCommandError as e:

@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 
 from src.utils.config import settings
+from src.utils.repository_registry import RepositoryRegistry
 from src.api import routes
 
 # Configure logging
@@ -80,6 +81,13 @@ async def startup_event():
                 logger.warning(f"⚠ AI unavailable: {reason}")
             else:
                 logger.info("✓ AI (Gemini) is ready")
+        
+        # Auto-load previously analyzed repositories from cache
+        logger.info("Auto-loading cached repositories...")
+        registry = RepositoryRegistry()
+        loaded_count = registry.auto_load_from_cache()
+        if loaded_count > 0:
+            logger.info(f"✓ Restored {loaded_count} previously analyzed repository(ies)")
         
         logger.info("✓ Application startup COMPLETE - Server ready for requests")
     except Exception as e:

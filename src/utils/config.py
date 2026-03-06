@@ -60,13 +60,18 @@ class Settings(BaseSettings):
     
     # RAG (Retrieval-Augmented Generation) Configuration
     ENABLE_RAG: bool = True
-    ENABLE_RAG_INDEX_ON_ANALYZE: bool = False  # Only index when query requires it, not during analysis
-    RAG_INDEX_PATH: str = "./data/rag_indices"
+    ENABLE_RAG_INDEX_ON_ANALYZE: bool = True  # Index during analysis to persist for later
+    RAG_INDEX_PATH: str = "./data/rag_indices"  # PERSISTENT: persists across Render restarts
     RAG_EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"  # Lightweight, fast model
     RAG_CHUNK_SIZE: int = 500  # Code chunk size in characters
     RAG_CHUNK_OVERLAP: int = 100  # Overlap between chunks
     RAG_TOP_K: int = 5  # Number of chunks to retrieve for context
     RAG_SIMILARITY_THRESHOLD: float = 0.3  # Minimum similarity score
+    RAG_BATCH_SIZE: int = 50  # Batch embedding generation (faster than one-by-one)
+    RAG_INDEXED_FILE_TYPES: list = [
+        ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".go", ".rs",
+        ".cpp", ".c", ".h", ".cs", ".rb", ".php", ".swift", ".kt"
+    ]  # Only index these file types (skip configs, data files, binaries)
     
     # Analysis Configuration
     SKIP_DIRS: list = [
