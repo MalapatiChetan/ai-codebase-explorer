@@ -36,7 +36,8 @@ class RepositoryMetadataBuilder:
         try:
             # Step 1: Clone repository
             logger.info("Step 1: Cloning repository...")
-            repo_path = self.scanner.clone_repository(repo_url)
+            repo_path, repo_name = self.scanner.clone_repository(repo_url)
+            logger.info(f"Repository cloned as: {repo_name}")
             
             # Step 2: Scan repository structure
             logger.info("Step 2: Scanning repository structure...")
@@ -65,7 +66,7 @@ class RepositoryMetadataBuilder:
             metadata = {
                 "repository": {
                     "url": repo_url,
-                    "name": scan_metadata["repo_name"],
+                    "name": repo_name,  # Use the canonical repo_name from URL extraction, not folder path
                     "path": str(repo_path),
                 },
                 "analysis": {

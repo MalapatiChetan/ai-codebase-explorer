@@ -33,7 +33,7 @@ class RepositoryScanner:
             name = name[:-4]
         return name
     
-    def clone_repository(self, repo_url: str) -> Path:
+    def clone_repository(self, repo_url: str) -> Tuple[Path, str]:
         """
         Clone a GitHub repository locally with safe directory cleanup.
         
@@ -41,7 +41,7 @@ class RepositoryScanner:
             repo_url: URL of the GitHub repository
             
         Returns:
-            Path to the cloned repository
+            Tuple of (Path to cloned repository, canonical repo name)
             
         Raises:
             ValueError: If cloning fails after retries
@@ -54,10 +54,27 @@ class RepositoryScanner:
             logger.info(f"Existing repository detected at {repo_path}")
             success = self._safe_remove_directory(repo_path)
             if not success:
-                logger.warning(f"Failed to remove existing repo, will attempt clone to alternative path")
-                # Try cloning to a temporary location first
-                temp_path = self.clone_path / f"{repo_name}_temp_{int(time.time())}"
-                repo_path = temp_path
+                logger.error(f"Failed to remove existing repo at {repo_path} - using aggressive cleanup")
+                # Force aggressive cleanup using multiple methods
+                try:
+                    # Try git clean first if it's a git repo
+                    import subprocess
+                    subprocess.run(['git', 'clean', '-fdx'], cwd=str(repo_path), timeout=10, capture_output=True)
+                except:
+                    pass
+                
+                # Use shutil with permission override
+                try:
+                    def handle_remove_error(func, path, exc):
+                        try:
+                            os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+                            func(path)
+                        except:
+                            pass
+                    shutil.rmtree(repo_path, onerror=handle_remove_error)
+                    logger.info(f"Aggressive cleanup succeeded for {repo_path}")
+                except Exception as cleanup_error:
+                    logger.warning(f"Could not fully cleanup {repo_path}: {cleanup_error}. Will attempt clone anyway.")
         
         try:
             logger.info(f"Cloning repository from {repo_url} to {repo_path}")
@@ -71,7 +88,7 @@ class RepositoryScanner:
                 single_branch=True    # Only default branch (faster, less memory)
             )
             logger.info(f"Successfully cloned repository to {repo_path} (shallow clone - storage optimized)")
-            return repo_path
+            return repo_path, repo_name
         
         except GitCommandError as e:
             logger.error(f"Git command error while cloning: {e}")
