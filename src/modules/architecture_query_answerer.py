@@ -7,6 +7,7 @@ from enum import Enum
 from typing import Dict, Optional, List, Tuple, NamedTuple
 from google import genai
 from src.utils.config import settings
+from src.utils.prompt_budget import create_budget, trim_code_snippets, estimate_tokens
 from src.modules.code_indexer import CodeChunk
 
 logger = logging.getLogger(__name__)
@@ -424,7 +425,15 @@ class ArchitectureQueryAnswerer:
     
     def _ai_answer_question(self, metadata: Dict, question: str, 
                            intent_match: IntentMatch) -> Dict:
-        """Answer question using Google Gemini with RAG-enhanced context."""
+        """Answer question using Google Gemini with RAG-enhanced context and proper token budgeting.
+        
+        Improvements:
+        - Proper token budgeting to avoid truncation
+        - Finish reason checking to detect truncation
+        - Automatic context trimming if budget exceeded
+        - Continuation retry if truncated
+        - Comprehensive observability logging
+        """
         try:
             repo_name = metadata['repository']['name']
             
@@ -432,6 +441,7 @@ class ArchitectureQueryAnswerer:
             code_context = ""
             rag_used = False
             ai_mode = "Gemini"
+            snippet_count = 0
             
             # Try to retrieve code context using RAG
             if self.rag_store:
@@ -444,6 +454,7 @@ class ArchitectureQueryAnswerer:
                         code_context = self._build_code_context(code_snippets)
                         rag_used = True
                         ai_mode = "RAG + Gemini"
+                        snippet_count = len(code_snippets)
                     else:
                         logger.debug("RAG search returned no results, using metadata-only context")
                 except Exception as e:
@@ -454,28 +465,90 @@ class ArchitectureQueryAnswerer:
             # Build metadata context
             context = self._construct_context(metadata)
             
-            # Build the prompt
+            # Build the prompt components
+            system_prompt = """You are an expert software architect analyzing a codebase.
+Answer questions about repository architecture clearly and concisely.
+Provide practical, actionable information based on the provided context."""
+            
+            # Calculate token budget and trim if needed
+            budget = create_budget(
+                model=self.google_model,
+                system_prompt=system_prompt,
+                user_question=question,
+                context=context + code_context,
+                reserved_output_tokens=1500,  # Reserve 1500 tokens for response
+            )
+            
+            # Log budget info
+            budget_stats = budget.to_dict()
+            logger.info(f"Token budget: {budget_stats}")
+            
+            # Trim context if over budget
+            if budget.is_over_budget:
+                logger.warning(f"⚠ Over token budget by {budget.context_trim_ratio:.0%}. Trimming context...")
+                code_context, trim_stats = trim_code_snippets(code_context, max_snippets=3, max_snippet_lines=20)
+                logger.info(f"Code snippet trim stats: {trim_stats}")
+                snippet_count = trim_stats.get("snippets_kept", snippet_count)
+            
+            # Build final prompt
             prompt = self._build_query_prompt_with_code(context, question, code_context)
             
             logger.info(f"Querying Gemini API ({ai_mode})...")
             logger.debug(f"Model: {self.google_model}, Temperature: {self.google_temperature}")
+            logger.debug(f"Prompt estimated tokens: {estimate_tokens(prompt)}")
+            
+            # Use configured max tokens with safe minimum
+            max_output_tokens = getattr(settings, "GOOGLE_MAX_TOKENS", 4000)
+            max_output_tokens = max(2000, min(8000, max_output_tokens))  # Safe range: 2000-8000
             
             # Call Google Gemini API
             response = self.client.models.generate_content(
                 model=self.google_model,
-                contents=f"""You are an expert software architect analyzing a codebase.
-Answer questions about repository architecture clearly and concisely.
-Provide practical, actionable information based on the provided context.
+                contents=f"""{system_prompt}
 
 {prompt}""",
                 config={
                     "temperature": self.google_temperature,
-                    "max_output_tokens": 1000,
+                    "max_output_tokens": max_output_tokens,
                 }
             )
             
             answer_text = response.text
-            logger.info(f"✓ Answer generated successfully via Gemini ({ai_mode})")
+            finish_reason = getattr(response, 'finish_reason', 'UNKNOWN')
+            output_chars = len(answer_text) if answer_text else 0
+            output_tokens = estimate_tokens(answer_text)
+            
+            # Check if answer was truncated
+            truncated_detected = finish_reason == "MAX_TOKENS" or (
+                output_chars > 0 and not answer_text.strip().endswith((')', ']', '}', '.', '!', '?', '```'))
+            )
+            
+            # Log observability metrics
+            observability_log = {
+                "prompt_estimated_tokens": estimate_tokens(prompt),
+                "snippet_count": snippet_count,
+                "context_chars": len(context) + len(code_context),
+                "requested_max_output_tokens": max_output_tokens,
+                "finish_reason": finish_reason,
+                "output_chars": output_chars,
+                "output_tokens": output_tokens,
+                "truncated_detected": truncated_detected,
+            }
+            logger.info(f"AI response metrics: {observability_log}")
+            
+            # Handle truncation with retry
+            if truncated_detected and finish_reason == "MAX_TOKENS":
+                logger.warning("✗ Response was truncated (finish_reason=MAX_TOKENS). Attempting second pass...")
+                answer_text = self._continue_truncated_answer(answer_text, metadata, question)
+                observability_log["retry_attempted"] = True
+            elif truncated_detected:
+                logger.warning(f"⚠ Possible truncation detected (finish_reason={finish_reason}). Response may be incomplete.")
+                observability_log["truncation_likely"] = True
+                # Add note to response
+                answer_text += "\n\n[Note: Response may be incomplete due to length constraints. Consider splitting your question.]"
+            else:
+                observability_log["retry_attempted"] = False
+                logger.info(f"✓ Answer generated successfully via Gemini ({ai_mode}) - fully complete")
             
             return {
                 "status": "success",
@@ -485,7 +558,9 @@ Provide practical, actionable information based on the provided context.
                 "question": question,
                 "repository": repo_name,
                 "used_rag": rag_used,
-                "intent": intent_match.intent.value
+                "intent": intent_match.intent.value,
+                "truncated": truncated_detected,
+                "observability": observability_log,
             }
         
         except Exception as e:
@@ -513,6 +588,55 @@ Provide practical, actionable information based on the provided context.
             result = self._rule_based_answer(metadata, question, intent_match)
             result["note"] = f"Gemini API error ({error_type}). Using fallback rule-based answer. Check logs for details."
             return result
+    
+    def _continue_truncated_answer(self, partial_answer: str, metadata: Dict, question: str) -> str:
+        """Continue a truncated answer from a previous API call.
+        
+        Strategy: Use the partial answer as context to get the continuation.
+        
+        Args:
+            partial_answer: The incomplete answer from the first call
+            metadata: Repository metadata
+            question: Original question
+            
+        Returns:
+            Complete answer (partial + continuation)
+        """
+        try:
+            logger.info("Making continuation call to Gemini...")
+            
+            continuation_prompt = f"""The following answer to a software architecture question was incomplete.
+Please continue from exactly where you stopped. Continue naturally without repetition.
+
+ORIGINAL QUESTION:
+{question}
+
+INCOMPLETE ANSWER (end was cut off):
+{partial_answer}
+
+CONTINUATION:
+"""
+            
+            # Make continuation call with lower max tokens to be more conservative
+            response = self.client.models.generate_content(
+                model=self.google_model,
+                contents=continuation_prompt,
+                config={
+                    "temperature": self.google_temperature,
+                    "max_output_tokens": 2000,  # Conservative for continuation
+                }
+            )
+            
+            continuation = response.text
+            complete_answer = partial_answer + "\n" + continuation
+            
+            logger.info(f"✓ Continuation successful. Original: {len(partial_answer)} chars, Continuation: {len(continuation)} chars")
+            return complete_answer
+        
+        except Exception as e:
+            logger.error(f"Continuation call failed ({type(e).__name__}): {e}. Returning partial answer.")
+            partial_answer += "\n\n[Note: Unable to retrieve complete answer. The above may be truncated. Please ask a more specific question.]"
+            return partial_answer
     
     def _rule_based_answer(self, metadata: Dict, question: str,
                           intent_match: IntentMatch) -> Dict:
