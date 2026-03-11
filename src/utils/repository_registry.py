@@ -173,3 +173,14 @@ class RepositoryRegistry:
             logger.error(f"Error during auto-load from cache: {type(e).__name__}: {e}")
         
         return loaded_count
+
+
+_registry_instance: Optional[RepositoryRegistry] = None
+
+
+def get_repository_registry() -> RepositoryRegistry:
+    """Return a shared repository registry instance."""
+    global _registry_instance
+    if _registry_instance is None:
+        _registry_instance = RepositoryRegistry()
+    return _registry_instance

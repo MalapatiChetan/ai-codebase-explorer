@@ -29,6 +29,8 @@ class VectorStoreConfig:
     pinecone_api_key: str = ""
     pinecone_index_name: str = "codebase-embeddings"
     pinecone_dimension: int = 384  # For all-MiniLM-L6-v2
+    pinecone_environment: str = "us-east-1-aws"
+    pinecone_namespace_prefix: str = ""
     
     # Shared config
     embedding_model: str = "all-MiniLM-L6-v2"
@@ -158,7 +160,7 @@ class LocalFaissProvider(VectorStoreProvider):
             self.faiss = faiss
             self.np = np
             self.available = True
-            logger.info("✓ FAISS available for local vector storage")
+            logger.debug("FAISS available for local vector storage")
         except ImportError:
             self.available = False
             logger.warning("⚠ FAISS not installed. Local vector store unavailable. Install: pip install faiss-cpu")
@@ -271,10 +273,11 @@ class LocalFaissProvider(VectorStoreProvider):
             distances, indices = index.search(query_array, min(top_k, len(chunks)))
             
             results = []
-            for dist, idx in zip(distances[0], indices):
+            for dist, idx in zip(distances[0], indices[0]):
+                idx = int(idx)
                 if idx >= 0 and idx < len(chunks):
                     # FAISS uses L2 distance; convert to similarity (0-1)
-                    similarity = 1 / (1 + dist)  # Inverse of L2 distance
+                    similarity = 1 / (1 + float(dist))  # Inverse of L2 distance
                     if similarity >= similarity_threshold:
                         results.append((chunks[idx], similarity))
             

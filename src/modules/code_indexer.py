@@ -12,17 +12,6 @@ from src.utils.config import settings
 logger = logging.getLogger(__name__)
 
 
-# Supported file extensions for code indexing
-SUPPORTED_EXTENSIONS = {
-    ".py", ".js", ".ts", ".jsx", ".tsx",
-    ".java", ".go", ".cs", ".cpp", ".c",
-    ".rb", ".php", ".scala", ".kotlin",
-    ".rs", ".swift", ".m", ".mm",
-    ".sql", ".sh", ".bash", ".yml", ".yaml",
-    ".json", ".xml", ".html", ".css", ".scss",
-}
-
-
 @dataclass
 class CodeChunk:
     """Represents a chunk of code with metadata."""
@@ -31,7 +20,7 @@ class CodeChunk:
     end_line: int
     code_content: str
     language: str
-    chunk_index: int
+    chunk_index: int = 0
     
     def __repr__(self):
         """String representation."""
@@ -55,6 +44,16 @@ class CodeIndexer:
         self.chunk_size = chunk_size or settings.RAG_CHUNK_SIZE
         self.chunk_overlap = chunk_overlap or settings.RAG_CHUNK_OVERLAP
         self.skip_dirs = set(settings.SKIP_DIRS)
+        self.supported_extensions = {
+            ext.lower() for ext in getattr(settings, "RAG_INDEXED_FILE_TYPES", [])
+        }
+        self.excluded_files = {
+            name.lower() for name in getattr(settings, "RAG_EXCLUDED_FILES", [])
+        }
+        self.last_index_stats: Dict[str, int] = {
+            "files_scanned": 0,
+            "chunks_created": 0,
+        }
     
     def index_repository(self, repo_path: str) -> List[CodeChunk]:
         """
@@ -66,7 +65,7 @@ class CodeIndexer:
         Returns:
             List of CodeChunk objects
         """
-        logger.info(f"Starting code indexing for {repo_path}")
+        logger.debug(f"Starting code indexing for {repo_path}")
         
         repo_path_obj = Path(repo_path)
         if not repo_path_obj.exists():
@@ -88,7 +87,13 @@ class CodeIndexer:
                     continue
                 
                 # Check if file extension is supported
-                if source_file.suffix.lower() not in SUPPORTED_EXTENSIONS:
+                if source_file.suffix.lower() not in self.supported_extensions:
+                    continue
+
+                if source_file.name.lower() in self.excluded_files:
+                    continue
+
+                if source_file.name.endswith((".min.js", ".min.css")):
                     continue
                 
                 # Index the file
@@ -109,7 +114,14 @@ class CodeIndexer:
             import traceback
             traceback.print_exc()
         
-        logger.info(f"Indexing complete: {file_count} files, {len(chunks)} chunks created")
+        self.last_index_stats = {
+            "files_scanned": file_count,
+            "chunks_created": len(chunks),
+        }
+        logger.info(
+            f"Source scan summary | "
+            f"files_scanned={file_count} chunks_created={len(chunks)}"
+        )
         return chunks
     
     def _should_skip(self, path: Path, repo_root: Path) -> bool:
@@ -134,6 +146,8 @@ class CodeIndexer:
             # Skip hidden directories/files
             if part.startswith(".") and part not in {".github", ".gitignore"}:
                 return True
+        if path.name.lower() in self.excluded_files:
+            return True
         
         return False
     

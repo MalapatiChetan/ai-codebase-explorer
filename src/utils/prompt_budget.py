@@ -247,7 +247,10 @@ def trim_code_snippets(
     
     for i, line in enumerate(lines):
         # Detect snippet markers
-        if "[Snippet" in line or line.startswith("RELEVANT CODE SNIPPETS"):
+        if line.startswith("RELEVANT CODE SNIPPETS"):
+            trimmed_lines.append(line)
+            continue
+        if "[Snippet" in line:
             in_snippet = True
             stats["snippets_found"] += 1
             

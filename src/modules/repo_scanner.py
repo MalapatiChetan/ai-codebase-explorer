@@ -33,7 +33,7 @@ class RepositoryScanner:
             name = name[:-4]
         return name
     
-    def _get_latest_remote_commit(self, repo_url: str) -> Optional[str]:
+    def get_latest_remote_commit(self, repo_url: str, short: bool = False) -> Optional[str]:
         """
         Get the latest commit hash from the remote repository without cloning.
         Uses git ls-remote to check the remote HEAD commit.
@@ -42,10 +42,22 @@ class RepositoryScanner:
             repo_url: URL of the GitHub repository
             
         Returns:
-            Short commit hash (8 chars) or None if unable to fetch
+            Commit hash or None if unable to fetch
         """
         try:
             import subprocess
+            result = subprocess.run(
+                ['git', 'ls-remote', repo_url, 'HEAD'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                line = result.stdout.strip()
+                if line:
+                    commit_hash = line.split()[0]
+                    return commit_hash[:8] if short else commit_hash
+            # Fallback to branch heads if HEAD query did not work
             result = subprocess.run(
                 ['git', 'ls-remote', '--heads', repo_url],
                 capture_output=True,
@@ -54,14 +66,24 @@ class RepositoryScanner:
             )
             if result.returncode == 0:
                 lines = result.stdout.strip().split('\n')
-                if lines:
-                    # First line is typically the HEAD/main branch
+                if lines and lines[0]:
                     commit_hash = lines[0].split()[0]
-                    return commit_hash[:8]  # Return short hash
+                    return commit_hash[:8] if short else commit_hash
             logger.debug(f"Could not fetch remote commit info for {repo_url}")
         except Exception as e:
             logger.debug(f"Error fetching remote commit: {e}")
         return None
+
+    def get_local_commit(self, repo_path: Path, short: bool = False) -> Optional[str]:
+        """Get the current local commit hash for a cloned repository."""
+        try:
+            from git import Repo as GitRepo
+
+            commit_hash = GitRepo(str(repo_path)).head.commit.hexsha
+            return commit_hash[:8] if short else commit_hash
+        except Exception as e:
+            logger.debug(f"Error reading local commit for {repo_path}: {e}")
+            return None
 
     def clone_repository(self, repo_url: str) -> Tuple[Path, str]:
         """
@@ -84,41 +106,41 @@ class RepositoryScanner:
         
         # Check if repository already exists
         if repo_path.exists():
-            logger.info(f"Existing repository detected at {repo_path}")
+            logger.debug(f"Existing repository detected at {repo_path}")
             
             # Try to get current commit and remote commit for smart caching
             try:
                 from git import Repo as GitRepo
                 local_repo = GitRepo(str(repo_path))
                 local_commit = local_repo.head.commit.hexsha[:8]
-                logger.info(f"Local repository commit: {local_commit}")
+                logger.debug(f"Local repository commit: {local_commit}")
                 
                 # Get latest remote commit
-                remote_commit = self._get_latest_remote_commit(repo_url)
+                remote_commit = self.get_latest_remote_commit(repo_url, short=True)
                 
                 if remote_commit:
-                    logger.info(f"Remote repository commit: {remote_commit}")
+                    logger.debug(f"Remote repository commit: {remote_commit}")
                     
                     if local_commit == remote_commit:
-                        logger.info(f"✓ Repository is up-to-date (no new commits). Skipping clone.")
+                        logger.info("Repository clone skipped because local copy is already current")
                         return repo_path, repo_name
                     else:
-                        logger.info(f"Repository has updates. Pulling latest changes...")
+                        logger.info("Repository has updates. Pulling latest changes")
                         try:
                             # Try to fetch and pull updates
                             local_repo.remotes.origin.fetch(depth=1)
                             local_repo.remotes.origin.pull(depth=1)
-                            logger.info(f"✓ Repository updated successfully")
+                            logger.info("Repository updated successfully")
                             return repo_path, repo_name
                         except Exception as pull_error:
                             logger.warning(f"Could not update repository via pull: {pull_error}. Will re-clone.")
                 else:
-                    logger.info("Could not determine remote commit. Proceeding with re-clone.")
+                    logger.info("Could not determine remote commit. Proceeding with re-clone")
             except Exception as e:
                 logger.warning(f"Could not check git status: {e}. Proceeding with re-clone.")
             
             # If we get here, we need to re-clone
-            logger.info(f"Re-cloning repository...")
+            logger.info("Re-cloning repository")
             success = self._safe_remove_directory(repo_path)
             if not success:
                 logger.error(f"Failed to remove existing repo at {repo_path} - using aggressive cleanup")
@@ -154,7 +176,7 @@ class RepositoryScanner:
                 depth=1,              # Only latest commit (90-95% smaller)
                 single_branch=True    # Only default branch (faster, less memory)
             )
-            logger.info(f"✓ Successfully cloned repository to {repo_path} (shallow clone - storage optimized)")
+            logger.info(f"Repository cloned successfully to {repo_path}")
             return repo_path, repo_name
         
         except GitCommandError as e:

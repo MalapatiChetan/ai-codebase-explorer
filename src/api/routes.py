@@ -8,14 +8,14 @@ from src.modules.metadata_builder import RepositoryMetadataBuilder
 from src.modules.ai_analyzer import AIArchitectureAnalyzer
 from src.modules.diagram_generator import ArchitectureDiagramGenerator
 from src.modules.architecture_query_answerer import ArchitectureQueryAnswerer
-from src.utils.repository_registry import RepositoryRegistry
+from src.utils.repository_registry import get_repository_registry
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["analysis"])
 
-# Initialize registry
-registry = RepositoryRegistry()
+# Initialize shared registry
+registry = get_repository_registry()
 
 # Request/Response models
 class AnalysisRequest(BaseModel):

@@ -1,12 +1,17 @@
 """Module metadata builder - structures all collected information."""
 
 import logging
+import subprocess
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 from src.modules.repo_scanner import RepositoryScanner
 from src.modules.framework_detector import FrameworkDetector
 from src.modules.diagram_generator import ArchitectureDiagramGenerator
 from src.modules.code_indexer import CodeIndexer
+from src.modules.vector_store_manager import get_vector_store_manager
+from src.utils.repository_registry import get_repository_registry
+from src.utils.config import settings
+from src.utils.logging_utils import configure_library_log_levels, log_step
 
 logger = logging.getLogger(__name__)
 
@@ -31,32 +36,42 @@ class RepositoryMetadataBuilder:
         Returns:
             Comprehensive repository metadata dictionary
         """
-        logger.info(f"Building metadata for {repo_url}")
+        configure_library_log_levels()
+        logger.info(f"Starting analysis for {repo_url}")
         
         try:
-            # Step 1: Clone repository
-            logger.info("Step 1: Cloning repository...")
+            repo_name = self.scanner.extract_repo_name(repo_url)
+            cached_metadata = self._get_cached_metadata_if_current(repo_url, repo_name)
+            if cached_metadata:
+                log_step(logger, 8, f"Indexing completed via cache for {repo_name}")
+                return cached_metadata
+
+            log_step(logger, 3, f"Cloning repository {repo_name}")
             repo_path, repo_name = self.scanner.clone_repository(repo_url)
-            logger.info(f"Repository cloned as: {repo_name}")
+            logger.info(f"Repository ready at {repo_path}")
             
             # Step 1b: Capture git information for smart caching
             git_commit = "unknown"
+            git_commit_short = "unknown"
             git_branch = "unknown"
             try:
                 from git import Repo as GitRepo
                 git_repo = GitRepo(str(repo_path))
-                git_commit = git_repo.head.commit.hexsha[:8]  # Short hash
+                git_commit = git_repo.head.commit.hexsha
+                git_commit_short = git_commit[:8]
                 git_branch = git_repo.active_branch.name
-                logger.info(f"Git info: commit={git_commit}, branch={git_branch}")
+                logger.info(f"Resolved commit={git_commit_short} branch={git_branch}")
             except Exception as e:
                 logger.debug(f"Could not extract git info: {e}")
             
-            # Step 2: Scan repository structure
-            logger.info("Step 2: Scanning repository structure...")
+            log_step(logger, 4, f"Scanning repository structure for {repo_name}")
             scan_metadata = self.scanner.scan_repository(repo_path)
             
-            # Step 3: Detect frameworks
-            logger.info("Step 3: Detecting frameworks...")
+            logger.info(
+                f"Repository scan summary | files={scan_metadata['file_count']} "
+                f"backend={scan_metadata['has_backend']} frontend={scan_metadata['has_frontend']}"
+            )
+            logger.info("Detecting frameworks and architecture metadata")
             detected_frameworks = self.detector.detect_frameworks(repo_path, scan_metadata)
             
             # Step 4: Get primary language
@@ -80,8 +95,9 @@ class RepositoryMetadataBuilder:
                     "url": repo_url,
                     "name": repo_name,  # Use the canonical repo_name from URL extraction, not folder path
                     "path": str(repo_path),
-                    "git_commit": git_commit,  # For smart caching (NEW)
-                    "git_branch": git_branch,   # For smart caching (NEW)
+                    "git_commit": git_commit,
+                    "git_commit_short": git_commit_short,
+                    "git_branch": git_branch,
                 },
                 "analysis": {
                     "file_count": scan_metadata["file_count"],
@@ -106,8 +122,7 @@ class RepositoryMetadataBuilder:
                 "important_files": self._extract_important_files(scan_metadata),
             }
             
-            # Step 10: Generate architecture diagrams
-            logger.info("Step 10: Generating architecture diagrams...")
+            logger.info("Generating architecture diagrams")
             try:
                 diagrams = self.diagram_generator.generate_diagrams(metadata)
                 metadata["diagrams"] = diagrams
@@ -115,13 +130,15 @@ class RepositoryMetadataBuilder:
                 logger.warning(f"Failed to generate diagrams: {e}")
                 metadata["diagrams"] = {"error": str(e)}
             
-            # Step 11: Index code for RAG system
-            logger.info("Step 11: Indexing code for semantic search...")
+            logger.info("Preparing semantic index")
             try:
                 self._index_code_for_rag(repo_path, metadata)
-                logger.info("Code indexing completed")
+                log_step(logger, 8, f"Indexing completed for {repo_name}")
             except Exception as e:
                 logger.warning(f"Failed to index code: {e}")
+
+            # Persist metadata so repeated analyze runs can return cached results
+            get_repository_registry().register(repo_name, metadata)
             
             logger.info("Metadata building completed successfully")
             return metadata
@@ -257,6 +274,86 @@ class RepositoryMetadataBuilder:
             "modules": metadata["modules"],
         }
     
+    def _get_commit_sha(self, repo_path: str) -> Optional[str]:
+        """Get the current commit SHA from the repository.
+        
+        Args:
+            repo_path: Path to the repository
+            
+        Returns:
+            Commit SHA or None if not available
+        """
+        try:
+            result = subprocess.run(
+                ['git', 'rev-parse', 'HEAD'],
+                cwd=str(repo_path),
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except Exception as e:
+            logger.debug(f"Could not get commit SHA: {e}")
+        
+        return None
+
+    def _get_cached_metadata_if_current(self, repo_url: str, repo_name: str) -> Optional[Dict]:
+        """Return cached metadata if repo commit and vector index are already current."""
+        registry = get_repository_registry()
+        cached_metadata = registry.get(repo_name)
+        if not cached_metadata:
+            logger.info(f"Analyze cache miss for {repo_name}: no cached metadata found")
+            return None
+
+        cached_repo = cached_metadata.get("repository", {})
+        cached_commit = cached_repo.get("git_commit")
+        cached_url = cached_repo.get("url")
+        if not cached_commit or cached_url != repo_url:
+            logger.info(
+                f"Analyze cache miss for {repo_name}: cached metadata missing commit or URL mismatch"
+            )
+            return None
+
+        repo_path = Path(settings.REPO_CLONE_PATH) / repo_name
+        log_step(logger, 1, f"Checking latest GitHub commit for {repo_name}")
+        remote_commit = self.scanner.get_latest_remote_commit(repo_url)
+        local_commit = self.scanner.get_local_commit(repo_path) if repo_path.exists() else None
+        logger.info(
+            "Commit comparison | "
+            f"repo={repo_name} remote_commit={remote_commit or 'unavailable'} "
+            f"local_commit={local_commit or 'unavailable'} cached_commit={cached_commit}"
+        )
+
+        current_commit = remote_commit or local_commit
+        if current_commit != cached_commit:
+            logger.info(
+                f"Analyze cache miss for {repo_name}: commit changed "
+                f"(current={current_commit or 'unavailable'}, cached={cached_commit})"
+            )
+            return None
+
+        if settings.ENABLE_RAG and settings.ENABLE_RAG_INDEX_ON_ANALYZE:
+            vector_store = get_vector_store_manager()
+            log_step(logger, 2, f"Checking Pinecone namespace for {repo_name}@{cached_commit[:8]}")
+            has_namespace = vector_store.health_check() and vector_store.has_commit_index(repo_name, cached_commit)
+            logger.info(
+                "Namespace lookup | "
+                f"repo={repo_name} commit_sha={cached_commit} exists={has_namespace}"
+            )
+            if not has_namespace:
+                logger.info(
+                    f"Cached metadata found for {repo_name}, but vector index is missing for commit {cached_commit[:8]}"
+                )
+                return None
+
+        logger.info(
+            f"Analyze cache hit for {repo_name} | commit_sha={cached_commit} "
+            f"remote_commit={remote_commit or 'unavailable'} local_commit={local_commit or 'unavailable'}"
+        )
+        logger.info(f"Skipping clone, scan, chunking, embeddings, and upsert for {repo_name}")
+        return cached_metadata
+    
     def _index_code_for_rag(self, repo_path: str, metadata: Dict) -> None:
         """
         Index code using RAG system for semantic search.
@@ -288,38 +385,65 @@ class RepositoryMetadataBuilder:
         
         try:
             repo_name = metadata["repository"]["name"]
-            logger.info(f"Starting code indexing for RAG system: {repo_name}")
+            logger.info(f"Indexing code for {repo_name} from {repo_path}")
+            
+            # Get current commit SHA for commit-aware caching
+            commit_sha = self._get_commit_sha(repo_path)
+            if commit_sha:
+                logger.info(f"Commit resolved for indexing | commit_sha={commit_sha}")
+
+            vector_store = get_vector_store_manager()
+            if commit_sha and vector_store.health_check():
+                log_step(logger, 2, f"Checking Pinecone namespace for {repo_name}@{commit_sha[:8]}")
+                if vector_store.has_commit_index(repo_name, commit_sha):
+                    logger.info(f"Code index already exists for {repo_name}, skipping indexing")
+                    return
             
             # Import RAG on-demand to avoid slow initialization at startup
             from src.modules.rag_vector_store import RAGVectorStore
             
-            # Initialize RAG vector store
-            rag_store = RAGVectorStore(repo_name)
+            # Initialize RAG vector store with commit tracking
+            rag_store = RAGVectorStore(repo_name, commit_sha=commit_sha)
             
             if not rag_store.is_available():
                 logger.warning("RAG system not available (missing dependencies)")
                 return
             
-            # Check if index already exists
-            if rag_store.load_index():
-                logger.info(f"Code index already exists for {repo_name}, skipping indexing")
-                return
-            
-            # Index code
-            logger.info(f"Indexing code from {repo_path}")
+            log_step(logger, 4, f"Scanning source files for {repo_name}")
             chunks = self.code_indexer.index_repository(repo_path)
+            scan_stats = getattr(self.code_indexer, "last_index_stats", {})
+            log_step(
+                logger,
+                5,
+                f"Generating code chunks | files_scanned={scan_stats.get('files_scanned', 0)} "
+                f"chunks_generated={scan_stats.get('chunks_created', len(chunks))}",
+            )
+            logger.info(
+                "Chunking summary | "
+                f"files_scanned={scan_stats.get('files_scanned', 0)} "
+                f"chunks_created={scan_stats.get('chunks_created', len(chunks))}"
+            )
             
             if not chunks:
                 logger.warning("No code chunks to index")
                 return
             
-            # Build vector index
-            success = rag_store.index_chunks(chunks)
+            log_step(logger, 6, f"Creating embeddings with {settings.RAG_EMBEDDING_MODEL}")
+            success, observability = rag_store.index_chunks(chunks)
+            logger.info(f"Embedding/index summary | {observability}")
             
             if success:
+                vectors_uploaded = observability.get("chunk_count", len(chunks))
+                log_step(
+                    logger,
+                    7,
+                    f"Uploading vectors to Pinecone completed | embeddings_created={observability.get('embeddings_generated', len(chunks))} "
+                    f"vectors_uploaded={vectors_uploaded}",
+                )
                 logger.info(f"Successfully indexed {len(chunks)} code chunks for {repo_name}")
+                logger.debug(f"Indexing observability: {observability}")
             else:
-                logger.error("Failed to index code chunks")
+                logger.error(f"Failed to index code chunks: {observability.get('status', 'unknown error')}")
         
         except Exception as e:
             logger.error(f"Error during code indexing: {e}")

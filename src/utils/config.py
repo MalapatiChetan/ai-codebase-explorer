@@ -72,6 +72,31 @@ class Settings(BaseSettings):
         ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".go", ".rs",
         ".cpp", ".c", ".h", ".cs", ".rb", ".php", ".swift", ".kt"
     ]  # Only index these file types (skip configs, data files, binaries)
+    RAG_EXCLUDED_FILES: list = [
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "pnpm-lock.yml",
+        "bun.lockb",
+        "npm-shrinkwrap.json",
+        "composer.lock",
+        "poetry.lock",
+        "uv.lock",
+        "cargo.lock",
+        "go.sum",
+        "package.json",
+        "tsconfig.tsbuildinfo",
+    ]
+    
+    # Vector Store Configuration (FAISS or Pinecone)
+    VECTOR_BACKEND: str = "local_faiss"  # Options: "local_faiss", "pinecone"
+    ENABLE_COMMIT_CACHE: bool = True  # Skip re-index if commit unchanged
+    
+    # Pinecone Configuration (optional, only if VECTOR_BACKEND=pinecone)
+    PINECONE_API_KEY: str = ""  # Get from: https://www.pinecone.io
+    PINECONE_INDEX_NAME: str = "codebase-embeddings"  # Your Pinecone index name
+    PINECONE_ENVIRONMENT: str = "us-east-1-aws"  # Pinecone environment region
+    PINECONE_NAMESPACE_PREFIX: str = ""
     
     # Analysis Configuration
     SKIP_DIRS: list = [
@@ -85,6 +110,11 @@ class Settings(BaseSettings):
         ".vscode",
         "dist",
         "build",
+        "coverage",
+        "out",
+        "tmp",
+        "temp",
+        "generated",
         ".gradle",
         "target",
         ".next",

@@ -7,7 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 
 from src.utils.config import settings
-from src.utils.repository_registry import RepositoryRegistry
+from src.utils.logging_utils import configure_library_log_levels
+from src.utils.repository_registry import get_repository_registry
 from src.api import routes
 
 # Configure logging
@@ -16,6 +17,7 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+configure_library_log_levels()
 
 # Create FastAPI application
 app = FastAPI(
@@ -84,7 +86,7 @@ async def startup_event():
         
         # Auto-load previously analyzed repositories from cache
         logger.info("Auto-loading cached repositories...")
-        registry = RepositoryRegistry()
+        registry = get_repository_registry()
         loaded_count = registry.auto_load_from_cache()
         if loaded_count > 0:
             logger.info(f"✓ Restored {loaded_count} previously analyzed repository(ies)")

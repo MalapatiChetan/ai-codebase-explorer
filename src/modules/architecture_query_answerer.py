@@ -58,11 +58,11 @@ class ArchitectureQueryAnswerer:
         if self.rag_enabled:
             logger.debug("RAG (semantic search) is enabled for enhanced context retrieval")
     
-    def _init_rag_for_repo(self, repo_name: str) -> Optional['RAGVectorStore']:
+    def _init_rag_for_repo(self, metadata: Dict) -> Optional['RAGVectorStore']:
         """Initialize RAG for a specific repository.
         
         Args:
-            repo_name: Repository name
+            metadata: Repository metadata
             
         Returns:
             RAGVectorStore if available, None otherwise
@@ -73,12 +73,25 @@ class ArchitectureQueryAnswerer:
         try:
             # Import RAG on-demand to avoid slow initialization at startup
             from src.modules.rag_vector_store import RAGVectorStore
-            
-            rag_store = RAGVectorStore(repo_name)
-            # Try to load existing index
+
+            repo = metadata.get("repository", {})
+            repo_name = repo.get("name")
+            commit_sha = repo.get("git_commit")
+            rag_store = RAGVectorStore(repo_name, commit_sha=commit_sha)
+
+            if not rag_store.is_available():
+                return None
+
+            if commit_sha:
+                if rag_store.vector_store.has_commit_index(repo_name, commit_sha):
+                    return rag_store
+                logger.debug(f"No commit-aware RAG index found for {repo_name}@{commit_sha[:8]}")
+                return None
+
             if rag_store.load_index():
                 return rag_store
         except Exception as e:
+            repo_name = metadata.get("repository", {}).get("name", "unknown")
             logger.debug(f"Could not load RAG index for {repo_name}: {e}")
         
         return None
@@ -415,7 +428,7 @@ class ArchitectureQueryAnswerer:
         logger.debug(f"Detected intent: {intent_match.intent.value} (confidence: {intent_match.confidence:.1%})")
         
         # Initialize RAG for this repository
-        self.rag_store = self._init_rag_for_repo(repo_name)
+        self.rag_store = self._init_rag_for_repo(metadata)
         
         # Route to AI or rule-based based on capability
         if self.ai_usable:
@@ -447,10 +460,11 @@ class ArchitectureQueryAnswerer:
             if self.rag_store:
                 logger.info("Attempting RAG retrieval for enhanced code context...")
                 try:
-                    code_snippets = self.rag_store.search(question, k=settings.RAG_TOP_K)
+                    code_snippets, search_observability = self.rag_store.search(question, k=settings.RAG_TOP_K)
                     
                     if code_snippets:
                         logger.info(f"✓ Retrieved {len(code_snippets)} relevant code chunks via RAG")
+                        logger.debug(f"Search observability: {search_observability}")
                         code_context = self._build_code_context(code_snippets)
                         rag_used = True
                         ai_mode = "RAG + Gemini"
