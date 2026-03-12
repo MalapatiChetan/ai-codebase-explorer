@@ -36,15 +36,54 @@ export const getDiagram = async (repoName, format = 'mermaid') => {
 }
 
 // Query Architecture
-export const queryArchitecture = async (repositoryName, question) => {
+export const queryArchitecture = async (repositoryName, question, conversationHistory = []) => {
   try {
     const response = await apiClient.post('/api/query', {
       repository_name: repositoryName,
       question,
+      conversation_history: conversationHistory,
     })
     return response.data
   } catch (error) {
     throw new Error(error.response?.data?.detail || 'Failed to query architecture')
+  }
+}
+
+export const getRepositoryInsights = async (repositoryName) => {
+  try {
+    const response = await apiClient.get(`/api/insights/${repositoryName}`)
+    return response.data
+  } catch (error) {
+    throw new Error(error.response?.data?.detail || 'Failed to retrieve repository insights')
+  }
+}
+
+export const getUserRepositories = async (username) => {
+  try {
+    const response = await apiClient.get(`/api/github/users/${username}/repos`)
+    return response.data
+  } catch (error) {
+    throw new Error(error.response?.data?.detail || 'Failed to retrieve user repositories')
+  }
+}
+
+export const getGitHubUserOverview = async (username) => {
+  try {
+    const response = await apiClient.get(`/api/github/users/${username}/overview`)
+    return response.data
+  } catch (error) {
+    throw new Error(error.response?.data?.detail || 'Failed to retrieve GitHub user overview')
+  }
+}
+
+export const getGitHubRepositoryInsights = async (owner, repo, username = '') => {
+  try {
+    const response = await apiClient.get(`/api/github/repos/${owner}/${repo}/insights`, {
+      params: username ? { username } : {},
+    })
+    return response.data
+  } catch (error) {
+    throw new Error(error.response?.data?.detail || 'Failed to retrieve GitHub repository insights')
   }
 }
 

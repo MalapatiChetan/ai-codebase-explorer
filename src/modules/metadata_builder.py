@@ -120,6 +120,14 @@ class RepositoryMetadataBuilder:
                 "modules": modules,
                 "root_files": scan_metadata["root_files"],
                 "important_files": self._extract_important_files(scan_metadata),
+                "indexing": {
+                    "status": "not_started",
+                    "files_scanned": 0,
+                    "chunk_count": 0,
+                    "embedding_count": 0,
+                    "vector_count": 0,
+                    "backend": settings.VECTOR_BACKEND,
+                },
             }
             
             logger.info("Generating architecture diagrams")
@@ -352,6 +360,16 @@ class RepositoryMetadataBuilder:
             f"remote_commit={remote_commit or 'unavailable'} local_commit={local_commit or 'unavailable'}"
         )
         logger.info(f"Skipping clone, scan, chunking, embeddings, and upsert for {repo_name}")
+        cached_indexing = cached_metadata.get("indexing", {})
+        cached_metadata["indexing"] = {
+            "status": "cached",
+            "reason": "Commit index already exists",
+            "files_scanned": cached_indexing.get("files_scanned", 0),
+            "chunk_count": cached_indexing.get("chunk_count", 0),
+            "embedding_count": cached_indexing.get("embedding_count", cached_indexing.get("chunk_count", 0)),
+            "vector_count": cached_indexing.get("vector_count", cached_indexing.get("chunk_count", 0)),
+            "backend": cached_indexing.get("backend", settings.VECTOR_BACKEND),
+        }
         return cached_metadata
     
     def _index_code_for_rag(self, repo_path: str, metadata: Dict) -> None:
@@ -372,15 +390,42 @@ class RepositoryMetadataBuilder:
         
         if not settings.ENABLE_RAG:
             logger.debug("RAG system disabled in configuration")
+            metadata["indexing"] = {
+                "status": "disabled",
+                "reason": "RAG disabled in configuration",
+                "files_scanned": 0,
+                "chunk_count": 0,
+                "embedding_count": 0,
+                "vector_count": 0,
+                "backend": settings.VECTOR_BACKEND,
+            }
             return
         
         if not settings.ENABLE_RAG_INDEX_ON_ANALYZE:
             logger.debug("RAG indexing on analyze disabled - will index on-demand when query requires it")
+            metadata["indexing"] = {
+                "status": "deferred",
+                "reason": "Indexing deferred until query time",
+                "files_scanned": 0,
+                "chunk_count": 0,
+                "embedding_count": 0,
+                "vector_count": 0,
+                "backend": settings.VECTOR_BACKEND,
+            }
             return
         
         # Skip indexing if no AI provider configured
         if not settings.GOOGLE_API_KEY:
             logger.debug("No Google API key configured - skipping RAG indexing (system will use rule-based answers)")
+            metadata["indexing"] = {
+                "status": "skipped",
+                "reason": "Missing Google API key",
+                "files_scanned": 0,
+                "chunk_count": 0,
+                "embedding_count": 0,
+                "vector_count": 0,
+                "backend": settings.VECTOR_BACKEND,
+            }
             return
         
         try:
@@ -397,6 +442,15 @@ class RepositoryMetadataBuilder:
                 log_step(logger, 2, f"Checking Pinecone namespace for {repo_name}@{commit_sha[:8]}")
                 if vector_store.has_commit_index(repo_name, commit_sha):
                     logger.info(f"Code index already exists for {repo_name}, skipping indexing")
+                    metadata["indexing"] = {
+                        "status": "cached",
+                        "reason": "Commit index already exists",
+                        "files_scanned": 0,
+                        "chunk_count": metadata.get("indexing", {}).get("chunk_count", 0),
+                        "embedding_count": metadata.get("indexing", {}).get("embedding_count", 0),
+                        "vector_count": metadata.get("indexing", {}).get("vector_count", 0),
+                        "backend": settings.VECTOR_BACKEND,
+                    }
                     return
             
             # Import RAG on-demand to avoid slow initialization at startup
@@ -407,6 +461,15 @@ class RepositoryMetadataBuilder:
             
             if not rag_store.is_available():
                 logger.warning("RAG system not available (missing dependencies)")
+                metadata["indexing"] = {
+                    "status": "unavailable",
+                    "reason": "RAG system not available",
+                    "files_scanned": 0,
+                    "chunk_count": 0,
+                    "embedding_count": 0,
+                    "vector_count": 0,
+                    "backend": settings.VECTOR_BACKEND,
+                }
                 return
             
             log_step(logger, 4, f"Scanning source files for {repo_name}")
@@ -426,6 +489,15 @@ class RepositoryMetadataBuilder:
             
             if not chunks:
                 logger.warning("No code chunks to index")
+                metadata["indexing"] = {
+                    "status": "empty",
+                    "reason": "No code chunks generated",
+                    "files_scanned": scan_stats.get("files_scanned", 0),
+                    "chunk_count": 0,
+                    "embedding_count": 0,
+                    "vector_count": 0,
+                    "backend": settings.VECTOR_BACKEND,
+                }
                 return
             
             log_step(logger, 6, f"Creating embeddings with {settings.RAG_EMBEDDING_MODEL}")
@@ -434,6 +506,14 @@ class RepositoryMetadataBuilder:
             
             if success:
                 vectors_uploaded = observability.get("chunk_count", len(chunks))
+                metadata["indexing"] = {
+                    "status": observability.get("status", "indexed"),
+                    "files_scanned": scan_stats.get("files_scanned", 0),
+                    "chunk_count": scan_stats.get("chunks_created", len(chunks)),
+                    "embedding_count": observability.get("embeddings_generated", len(chunks)),
+                    "vector_count": vectors_uploaded,
+                    "backend": settings.VECTOR_BACKEND,
+                }
                 log_step(
                     logger,
                     7,
@@ -444,8 +524,26 @@ class RepositoryMetadataBuilder:
                 logger.debug(f"Indexing observability: {observability}")
             else:
                 logger.error(f"Failed to index code chunks: {observability.get('status', 'unknown error')}")
+                metadata["indexing"] = {
+                    "status": "failed",
+                    "reason": observability.get("status", "unknown error"),
+                    "files_scanned": scan_stats.get("files_scanned", 0),
+                    "chunk_count": scan_stats.get("chunks_created", len(chunks)),
+                    "embedding_count": observability.get("embeddings_generated", 0),
+                    "vector_count": observability.get("chunk_count", 0),
+                    "backend": settings.VECTOR_BACKEND,
+                }
         
         except Exception as e:
             logger.error(f"Error during code indexing: {e}")
+            metadata["indexing"] = {
+                "status": "error",
+                "reason": str(e),
+                "files_scanned": 0,
+                "chunk_count": 0,
+                "embedding_count": 0,
+                "vector_count": 0,
+                "backend": settings.VECTOR_BACKEND,
+            }
             import traceback
             traceback.print_exc()

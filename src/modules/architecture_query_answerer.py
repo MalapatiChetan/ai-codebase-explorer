@@ -1,6 +1,5 @@
 """Architecture question answering module for repository Q&A."""
 
-import json
 import logging
 import re
 from enum import Enum
@@ -404,7 +403,12 @@ class ArchitectureQueryAnswerer:
         
         return answer.strip()
     
-    def answer_question(self, metadata: Dict, question: str) -> Dict:
+    def answer_question(
+        self,
+        metadata: Dict,
+        question: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict:
         """
         Answer a question about the repository architecture.
         
@@ -430,14 +434,17 @@ class ArchitectureQueryAnswerer:
         # Initialize RAG for this repository
         self.rag_store = self._init_rag_for_repo(metadata)
         
+        conversation_history = conversation_history or []
+
         # Route to AI or rule-based based on capability
         if self.ai_usable:
-            return self._ai_answer_question(metadata, question, intent_match)
+            return self._ai_answer_question(metadata, question, intent_match, conversation_history)
         else:
             return self._rule_based_answer(metadata, question, intent_match)
     
     def _ai_answer_question(self, metadata: Dict, question: str, 
-                           intent_match: IntentMatch) -> Dict:
+                           intent_match: IntentMatch,
+                           conversation_history: Optional[List[Dict[str, str]]] = None) -> Dict:
         """Answer question using Google Gemini with RAG-enhanced context and proper token budgeting.
         
         Improvements:
@@ -478,6 +485,7 @@ class ArchitectureQueryAnswerer:
             
             # Build metadata context
             context = self._construct_context(metadata)
+            conversation_context = self._build_conversation_context(conversation_history or [])
             
             # Build the prompt components
             system_prompt = """You are an expert software architect analyzing a codebase.
@@ -489,7 +497,7 @@ Provide practical, actionable information based on the provided context."""
                 model=self.google_model,
                 system_prompt=system_prompt,
                 user_question=question,
-                context=context + code_context,
+                context=context + code_context + conversation_context,
                 reserved_output_tokens=1500,  # Reserve 1500 tokens for response
             )
             
@@ -506,6 +514,8 @@ Provide practical, actionable information based on the provided context."""
             
             # Build final prompt
             prompt = self._build_query_prompt_with_code(context, question, code_context)
+            if conversation_context:
+                prompt = self._inject_conversation_context(prompt, conversation_context)
             
             logger.info(f"Querying Gemini API ({ai_mode})...")
             logger.debug(f"Model: {self.google_model}, Temperature: {self.google_temperature}")
@@ -541,7 +551,7 @@ Provide practical, actionable information based on the provided context."""
             observability_log = {
                 "prompt_estimated_tokens": estimate_tokens(prompt),
                 "snippet_count": snippet_count,
-                "context_chars": len(context) + len(code_context),
+                "context_chars": len(context) + len(code_context) + len(conversation_context),
                 "requested_max_output_tokens": max_output_tokens,
                 "finish_reason": finish_reason,
                 "output_chars": output_chars,
@@ -808,4 +818,36 @@ CONTINUATION:
         ])
         
         return "\n".join(prompt_parts)
+
+    def _build_conversation_context(self, conversation_history: List[Dict[str, str]]) -> str:
+        """Format recent conversation history for conversational AI responses."""
+        if not conversation_history:
+            return ""
+
+        recent_messages = conversation_history[-8:]
+        lines = ["RECENT CONVERSATION:"]
+        for message in recent_messages:
+            role = (message.get("role") or "user").strip().lower()
+            if role not in {"user", "assistant"}:
+                continue
+            content = (message.get("content") or "").strip()
+            if not content:
+                continue
+            speaker = "User" if role == "user" else "Assistant"
+            lines.append(f"{speaker}: {content}")
+
+        if len(lines) == 1:
+            return ""
+
+        return "\n".join(lines)
+
+    def _inject_conversation_context(self, prompt: str, conversation_context: str) -> str:
+        """Append prior chat turns to the prompt while keeping current question primary."""
+        return "\n".join([
+            prompt,
+            "",
+            conversation_context,
+            "",
+            "Use the conversation history only to maintain continuity and resolve follow-up references.",
+        ])
 
